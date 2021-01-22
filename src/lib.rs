@@ -1,7 +1,7 @@
 use bevy::reflect::{TypeRegistryArc, TypeRegistryInternal};
 use bevy::{ecs::TypeInfo, prelude::*};
 use bevy_egui::{egui, EguiContext};
-use bevy_inspector_egui::{Inspectable};
+use bevy_inspector_egui::Inspectable;
 use egui::CollapsingHeader;
 use std::any::{Any, TypeId};
 use std::cell::RefCell;
@@ -144,13 +144,11 @@ impl InspectGenerator {
     #[cfg(feature = "rapier")]
     {
       use bevy_rapier3d::physics::RigidBodyHandleComponent;
-      impls.extend(
-        ui_for_types!(RigidBodyHandleComponent)
-      );
+      impls.extend(ui_for_types!(RigidBodyHandleComponent));
     }
-        
+
     InspectGenerator {
-      impls: impls.into_iter().collect::<HashMap<_, _>>()
+      impls: impls.into_iter().collect::<HashMap<_, _>>(),
     }
   }
 
@@ -165,18 +163,21 @@ impl InspectGenerator {
     ui: &mut egui::Ui,
   ) -> Option<()> {
     let archetype = &world.archetypes[archetype_index];
-    let ptr = unsafe { archetype.get_dynamic(type_info.id(), type_info.layout().size(), entity_index).unwrap().as_ptr() };  
+    let ptr = unsafe {
+      archetype
+        .get_dynamic(type_info.id(), type_info.layout().size(), entity_index)
+        .unwrap()
+        .as_ptr()
+    };
     if let Some(f) = self.impls.get(&type_info.id()) {
       f(ptr, ui, resources);
     } else {
       let registration = type_registry.get(type_info.id())?;
       let reflect_component = registration.data::<ReflectComponent>()?;
-      let reflected = unsafe {
-        reflect_component.reflect_component_mut(&world.archetypes[archetype_index], entity_index)
-      };
+      let reflected = unsafe { reflect_component.reflect_component_mut(archetype, entity_index) };
       bevy_inspector_egui::reflect::ui_for_reflect(reflected, ui);
     };
-   
+
     Some(())
   }
 }
