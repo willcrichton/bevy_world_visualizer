@@ -1,7 +1,7 @@
 use bevy::reflect::{TypeRegistryArc, TypeRegistryInternal};
 use bevy::{ecs::TypeInfo, prelude::*};
 use bevy_egui::{egui, EguiContext};
-use bevy_inspector_egui::{Inspectable, Options};
+use bevy_inspector_egui::{Inspectable};
 use egui::CollapsingHeader;
 use std::any::{Any, TypeId};
 use std::cell::RefCell;
@@ -100,7 +100,7 @@ macro_rules! ui_for_type {
       Box::new(|t: &mut dyn Any, ui: &mut egui::Ui| {
         t.downcast_mut::<$t>().unwrap().ui(
           ui,
-          Options::new(<$t as Inspectable>::FieldOptions::default()),
+          <$t as Inspectable>::Attributes::default(),
         )
       }) as InspectCallback,
     )
@@ -137,7 +137,7 @@ struct InspectGenerator {
 impl InspectGenerator {
   fn new() -> Self {
     InspectGenerator {
-      impls: ui_for_types!(Transform)
+      impls: ui_for_types!(Transform, GlobalTransform)
         .into_iter()
         .collect::<HashMap<_, _>>(),
     }
