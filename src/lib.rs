@@ -91,16 +91,19 @@ impl EntityTree {
   }
 }
 
-type InspectCallback = Box<dyn Fn(&mut dyn Any, &mut egui::Ui) -> ()>;
+type InspectCallback = Box<dyn Fn(*mut u8, &mut egui::Ui, &Resources) -> ()>;
+
+use std::mem;
 
 macro_rules! ui_for_type {
   ($t:ty) => {
     (
       TypeId::of::<$t>(),
-      Box::new(|t: &mut dyn Any, ui: &mut egui::Ui| {
-        t.downcast_mut::<$t>().unwrap().ui(
+      Box::new(|ptr: *mut u8, ui: &mut egui::Ui, resources: &Resources| {
+        let value: &mut $t = unsafe { mem::transmute(ptr) };
+        value.ui(
           ui,
-          <$t as Inspectable>::Attributes::default(),
+          <$t as Inspectable>::Attributes::from_resources(resources),
         )
       }) as InspectCallback,
     )
@@ -136,29 +139,44 @@ struct InspectGenerator {
 
 impl InspectGenerator {
   fn new() -> Self {
+    let mut impls = ui_for_types!(Transform, GlobalTransform);
+
+    #[cfg(feature = "rapier")]
+    {
+      use bevy_rapier3d::physics::RigidBodyHandleComponent;
+      impls.extend(
+        ui_for_types!(RigidBodyHandleComponent)
+      );
+    }
+        
     InspectGenerator {
-      impls: ui_for_types!(Transform, GlobalTransform)
-        .into_iter()
-        .collect::<HashMap<_, _>>(),
+      impls: impls.into_iter().collect::<HashMap<_, _>>()
     }
   }
 
   fn generate(
     &self,
     world: &World,
+    resources: &Resources,
     archetype_index: usize,
     entity_index: usize,
     type_info: &TypeInfo,
     type_registry: &TypeRegistryInternal,
     ui: &mut egui::Ui,
   ) -> Option<()> {
-    let registration = type_registry.get(type_info.id())?;
-    let reflect_component = registration.data::<ReflectComponent>()?;
-    let reflected = unsafe {
-      reflect_component.reflect_component_mut(&world.archetypes[archetype_index], entity_index)
+    let archetype = &world.archetypes[archetype_index];
+    let ptr = unsafe { archetype.get_dynamic(type_info.id(), type_info.layout().size(), entity_index).unwrap().as_ptr() };  
+    if let Some(f) = self.impls.get(&type_info.id()) {
+      f(ptr, ui, resources);
+    } else {
+      let registration = type_registry.get(type_info.id())?;
+      let reflect_component = registration.data::<ReflectComponent>()?;
+      let reflected = unsafe {
+        reflect_component.reflect_component_mut(&world.archetypes[archetype_index], entity_index)
+      };
+      bevy_inspector_egui::reflect::ui_for_reflect(reflected, ui);
     };
-    let f = self.impls.get(&type_info.id())?;
-    f(reflected.any_mut(), ui);
+   
     Some(())
   }
 }
@@ -224,6 +242,7 @@ fn world_visualizer_system(world: &mut World, resources: &mut Resources) {
                 if inspect_generator
                   .generate(
                     &world,
+                    &resources,
                     *archetype_index,
                     *entity_index,
                     type_info,
