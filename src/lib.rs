@@ -1,11 +1,12 @@
 use bevy::reflect::{TypeRegistryArc, TypeRegistryInternal};
 use bevy::{ecs::TypeInfo, prelude::*};
 use bevy_egui::{egui, EguiContext};
-use bevy_inspector_egui::Inspectable;
+use bevy_inspector_egui::{Context, InspectableWithContext};
 use egui::CollapsingHeader;
-use std::any::{Any, TypeId};
+use std::any::TypeId;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::mem;
 use std::rc::Rc;
 
 #[derive(Default, Debug)]
@@ -91,65 +92,43 @@ impl EntityTree {
   }
 }
 
-type InspectCallback = Box<dyn Fn(*mut u8, &mut egui::Ui, &Resources) -> ()>;
+type InspectCallback = Box<dyn Fn(*mut u8, &mut egui::Ui, &Resources) -> () + Send + Sync>;
 
-use std::mem;
-
-macro_rules! ui_for_type {
-  ($t:ty) => {
-    (
-      TypeId::of::<$t>(),
-      Box::new(|ptr: *mut u8, ui: &mut egui::Ui, resources: &Resources| {
-        let value: &mut $t = unsafe { mem::transmute(ptr) };
-        value.ui(
-          ui,
-          <$t as Inspectable>::Attributes::from_resources(resources),
-        )
-      }) as InspectCallback,
-    )
-  };
-}
-
-macro_rules! ui_for_types {
-  ($($t:ty),*) => {
-    vec![$(ui_for_type!($t)),*]
-  }
-}
-
-fn clean_path(path: &str) -> String {
-  // Remove leading paths to in component names
-  let re = regex::Regex::new(r"([\w\d]+)(<([^>]+)>)?$").unwrap();
-  match re.captures(path) {
-    Some(captures) => {
-      let base = captures.get(1).unwrap().as_str().to_string();
-      match captures.get(3) {
-        Some(param) => {
-          format!("{}<{}>", base, param.as_str().split("::").last().unwrap())
-        }
-        None => base,
-      }
-    }
-    None => path.to_string(),
-  }
-}
-
-struct InspectGenerator {
+pub struct InspectGenerator {
   impls: HashMap<TypeId, InspectCallback>,
 }
 
-impl InspectGenerator {
-  fn new() -> Self {
-    let mut impls = ui_for_types!(Transform, GlobalTransform);
+impl Default for InspectGenerator {
+  fn default() -> Self {
+    let mut this = InspectGenerator {
+      impls: HashMap::new(),
+    };
+
+    this.register::<Transform>();
+    this.register::<GlobalTransform>();
 
     #[cfg(feature = "rapier")]
     {
       use bevy_rapier3d::physics::RigidBodyHandleComponent;
-      impls.extend(ui_for_types!(RigidBodyHandleComponent));
+      this.register::<RigidBodyHandleComponent>();
     }
 
-    InspectGenerator {
-      impls: impls.into_iter().collect::<HashMap<_, _>>(),
-    }
+    this
+  }
+}
+
+impl InspectGenerator {
+  pub fn register<T: InspectableWithContext + 'static>(&mut self) {
+    let type_id = TypeId::of::<T>();
+    let generator = Box::new(|ptr: *mut u8, ui: &mut egui::Ui, resources: &Resources| {
+      let value: &mut T = unsafe { mem::transmute(ptr) };
+      value.ui_with_context(
+        ui,
+        <T as InspectableWithContext>::Attributes::default(),
+        &Context { resources },
+      )
+    }) as InspectCallback;
+    self.impls.insert(type_id, generator);
   }
 
   fn generate(
@@ -163,6 +142,7 @@ impl InspectGenerator {
     ui: &mut egui::Ui,
   ) -> Option<()> {
     let archetype = &world.archetypes[archetype_index];
+
     let ptr = unsafe {
       archetype
         .get_dynamic(type_info.id(), type_info.layout().size(), entity_index)
@@ -179,6 +159,25 @@ impl InspectGenerator {
     };
 
     Some(())
+  }
+}
+
+// TODO: we should probably use serde for this, but that's a heavy dependency just to
+// tokenize identifiers.
+fn clean_path(path: &str) -> String {
+  // Remove leading paths to in component names
+  let re = regex::Regex::new(r"([\w\d]+)(<([^>]+)>)?$").unwrap();
+  match re.captures(path) {
+    Some(captures) => {
+      let base = captures.get(1).unwrap().as_str().to_string();
+      match captures.get(3) {
+        Some(param) => {
+          format!("{}<{}>", base, param.as_str().split("::").last().unwrap())
+        }
+        None => base,
+      }
+    }
+    None => path.to_string(),
   }
 }
 
@@ -199,7 +198,7 @@ fn world_visualizer_system(world: &mut World, resources: &mut Resources) {
   let type_registry = resources.get::<TypeRegistryArc>().unwrap();
   let type_registry = type_registry.read();
 
-  let inspect_generator = InspectGenerator::new();
+  let inspect_generator = resources.get::<InspectGenerator>().unwrap();
 
   egui::Window::new("World Visualizer")
     .scroll(true)
@@ -252,7 +251,7 @@ fn world_visualizer_system(world: &mut World, resources: &mut Resources) {
                   )
                   .is_none()
                 {
-                  ui.label("Inspectable has not been defined for this component");
+                  ui.label("InspectableWithContext has not been defined for this component");
                 }
               })
               .header_response
@@ -267,6 +266,7 @@ pub struct WorldVisualizerPlugin;
 impl Plugin for WorldVisualizerPlugin {
   fn build(&self, app: &mut AppBuilder) {
     app
+      .init_resource::<InspectGenerator>()
       .init_resource::<WorldVisualizerParams>()
       .add_system(world_visualizer_system.system());
   }
